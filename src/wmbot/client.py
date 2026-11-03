@@ -13,10 +13,12 @@ DEFAULT_RATE_WAIT = 120.0
 DEFAULT_DAILY_WAIT = 3600.0
 MIN_RATE_WAIT = 15.0
 MAX_RATE_WAIT = 26 * 3600.0
+VERIFICATION_MARKER = b"human_verification_required"
 
 
 class Status(Enum):
     OPENED = "opened"
+    VERIFICATION_REQUIRED = "human_verification_required"
     RATE_LIMITED = "rate_limited"
     UNAUTHORIZED = "unauthorized"
     FORBIDDEN = "forbidden"
@@ -73,6 +75,8 @@ def rate_limit_wait(data: dict[str, object], response: Response, now: dt.datetim
 def classify_open(response: Response, ref_now: dt.datetime) -> OpenResult:
     parsed = response.json()
     data: dict[str, object] = parsed if isinstance(parsed, dict) else {}
+    if VERIFICATION_MARKER in response.body and not (response.status == 200 and data.get("cards")):
+        return OpenResult(Status.VERIFICATION_REQUIRED, response)
     if response.status == 429 or data.get("rate_limited"):
         remaining = data.get("packs_remaining")
         return OpenResult(

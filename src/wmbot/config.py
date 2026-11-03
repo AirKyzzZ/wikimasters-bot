@@ -24,7 +24,6 @@ class Config:
     discord_webhook: str = ""
     user_agent: str = "Mozilla/5.0 (X11; Linux x86_64) wmbot (personal, one account)"
     auto_report: bool = True
-    collection_table: str = ""
 
     @property
     def pulls_file(self) -> Path:
@@ -37,6 +36,10 @@ class Config:
     @property
     def state_file(self) -> Path:
         return self.data_dir / "state.json"
+
+    @property
+    def halt_file(self) -> Path:
+        return self.data_dir / "halted.json"
 
     @property
     def lock_file(self) -> Path:
@@ -93,5 +96,4 @@ def load_config(env: dict[str, str] | None = None, env_file: Path | None = None)
         discord_webhook=_require_discord(get("WM_DISCORD_WEBHOOK", "")),
         user_agent=get("WM_USER_AGENT", Config.user_agent),
         auto_report=get("WM_AUTO_REPORT", "1").lower() not in {"0", "false", "no", "off"},
-        collection_table=get("WM_COLLECTION_TABLE", ""),
     )

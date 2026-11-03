@@ -33,6 +33,10 @@ class ForbiddenError(Exception):
     pass
 
 
+class HumanVerificationRequired(Exception):
+    pass
+
+
 def regen_wait(last_regen_at: str | None, now: dt.datetime) -> float:
     elapsed = seconds_until(last_regen_at, now)
     if elapsed is None:
@@ -90,6 +94,11 @@ class Bot:
             log.error("pack opened but not logged (%s): %s", type(err).__name__, summary)
 
     def handle(self, result: OpenResult, now: dt.datetime) -> tuple[float, str]:
+        if result.status is Status.VERIFICATION_REQUIRED:
+            raise HumanVerificationRequired(
+                "the site asks for human verification. Complete it yourself in a browser, "
+                "then run `wmbot resume` and start the bot again"
+            )
         if result.status is Status.OPENED:
             self.errors = self.auth_failures = self.forbidden = 0
             self._record(result, now)
@@ -158,6 +167,12 @@ class Bot:
             write_json_atomic(self.config.state_file, state)
         except OSError as err:
             log.warning("cannot write state: %s", type(err).__name__)
+
+    def halt(self, reason: str) -> None:
+        try:
+            write_json_atomic(self.config.halt_file, {"reason": reason, "at": self.clock().isoformat()})
+        except OSError as err:
+            log.error("cannot write halt marker: %s", type(err).__name__)
 
     def alert(self, message: str) -> None:
         log.error("%s", message)

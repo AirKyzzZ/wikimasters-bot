@@ -21,7 +21,7 @@ from tests.support import (
 )
 from wmbot.client import MAX_RATE_WAIT, MIN_RATE_WAIT, seconds_until
 from wmbot.pulls import Card, Pull, append_pull, read_pulls
-from wmbot.runner import Bot, ForbiddenError, regen_wait
+from wmbot.runner import Bot, ForbiddenError, HumanVerificationRequired, regen_wait
 from wmbot.session import Authenticator, FatalAuthError, SessionStore
 
 
@@ -182,6 +182,39 @@ class BotTests(ServerTestCase):
         with self.assertRaises(ForbiddenError):
             bot.step()
         self.assertEqual(self.mock.hits(REFRESH_PATH), [])
+
+    def test_human_verification_stops_at_once_without_touching_session(self):
+        self.mock.on(OPEN_PATH, Reply(403, {"error": "human_verification_required"}))
+        self.mock.on(REFRESH_PATH, Reply(200, fresh_tokens(1)))
+        bot = self.bot()
+        before = self.config.session_file.read_bytes()
+        with self.assertRaisesRegex(HumanVerificationRequired, "wmbot resume"):
+            bot.step()
+        self.assertEqual(len(self.mock.hits(OPEN_PATH)), 1)
+        self.assertEqual(self.mock.hits(REFRESH_PATH), [])
+        self.assertEqual(self.config.session_file.read_bytes(), before)
+        self.assertEqual(list(read_pulls(self.config.pulls_file)), [])
+
+    def test_human_verification_detected_on_any_status_and_shape(self):
+        replies = [
+            Reply(429, {"code": "human_verification_required", "retry_after": iso(5)}),
+            Reply(401, {"detail": {"reason": "human_verification_required"}}),
+            Reply(200, {"error": "human_verification_required"}),
+            Reply(403, b"<html>human_verification_required</html>"),
+        ]
+        for reply in replies:
+            with self.subTest(status=reply.status):
+                self.mock.on(OPEN_PATH, reply)
+                with self.assertRaises(HumanVerificationRequired):
+                    self.bot().step()
+
+    def test_card_mentioning_the_marker_is_still_a_pack(self):
+        self.mock.on(OPEN_PATH, Reply(200, pack(cards=[card("human_verification_required")])))
+        self.assertEqual(self.bot().step()[1], "opened")
+
+    def test_plain_403_is_not_treated_as_verification(self):
+        self.mock.on(OPEN_PATH, Reply(403, {"error": "forbidden"}))
+        self.assertEqual(self.bot().step()[1], "forbidden")
 
     def test_5xx_backs_off_exponentially_up_to_cap_and_resets(self):
         self.mock.on(OPEN_PATH, *[Reply(503, b"x") for _ in range(9)], Reply(200, pack()))
