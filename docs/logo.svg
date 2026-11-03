@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" role="img" aria-label="wmbot logo: three fanned cards, the front one with a serif W">
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fffdf7"/>
+      <stop offset="1" stop-color="#f1e9d6"/>
+    </linearGradient>
+    <linearGradient id="foil" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e0b04a"/>
+      <stop offset="1" stop-color="#a8701c"/>
+    </linearGradient>
+  </defs>
+  <g stroke="#1f2430" stroke-width="5" stroke-linejoin="round">
+    <rect x="62" y="44" width="116" height="160" rx="13" fill="#3f6fb5" transform="rotate(-18 120 124)"/>
+    <rect x="62" y="44" width="116" height="160" rx="13" fill="#b5483f" transform="rotate(18 120 124)"/>
+    <rect x="62" y="36" width="116" height="164" rx="13" fill="url(#face)"/>
+  </g>
+  <rect x="72" y="46" width="96" height="144" rx="7" fill="none" stroke="url(#foil)" stroke-width="3"/>
+  <path fill="#1f2430" transform="translate(120 118) scale(.84) translate(-120 -120)" d="M81 88h27v5.5l-7.5 1 13 37 10.5-27-4.500-10-6.500-1V88h27v5.500l-8 1 13 37 12-36-9-2V88h22v5.500l-6.500 1.500-19 56h-7l-13.500-37-14.500 37h-7L88 95l-7-1.500z"/>
+  <path fill="url(#foil)" d="M120 160l4 9 9 4-9 4-4 9-4-9-9-4 9-4z"/>
+  <circle cx="86" cy="62" r="4" fill="url(#foil)"/>
+  <circle cx="154" cy="62" r="4" fill="url(#foil)"/>
+</svg>
