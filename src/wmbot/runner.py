@@ -116,6 +116,14 @@ class Bot:
             wait = (result.wait or 0) + self.rng.uniform(3, 15)
             log.info("%s limit, sleeping %ds", "daily" if result.daily else "rate", wait)
             return wait, "daily_limit" if result.daily else "rate_limited"
+        if result.status is Status.OUT_OF_STOCK:
+            self.errors = self.auth_failures = self.forbidden = 0
+            self.verification_hits = 0
+            self.packs_remaining = result.packs_remaining
+            wait = (result.wait or REGEN_SECONDS) + self.rng.uniform(5, 30)
+            wait = min(max(wait, MIN_REGEN_WAIT), MAX_REGEN_WAIT)
+            log.info("no pack left, sleeping %ds until the next regen", wait)
+            return wait, "out_of_stock"
         if result.status is Status.UNAUTHORIZED:
             self.auth_failures += 1
             log.warning("unauthorized (%d/%d)", self.auth_failures, MAX_AUTH_FAILURES)

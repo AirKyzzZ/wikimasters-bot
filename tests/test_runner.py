@@ -21,7 +21,13 @@ from tests.support import (
 )
 from wmbot.client import MAX_RATE_WAIT, MIN_RATE_WAIT, seconds_until
 from wmbot.pulls import Card, Pull, append_pull, read_pulls
-from wmbot.runner import Bot, ForbiddenError, regen_wait
+from wmbot.runner import (
+    Bot,
+    ForbiddenError,
+    MAX_REGEN_WAIT,
+    MIN_REGEN_WAIT,
+    regen_wait,
+)
 from wmbot.session import Authenticator, FatalAuthError, SessionStore
 
 
@@ -87,6 +93,25 @@ class BotTests(ServerTestCase):
         self.mock.on(OPEN_PATH, Reply(200, pack(remaining=0, regen=iso(-240))))
         wait, _ = self.bot().step()
         self.assertTrue(365 <= wait <= 390, wait)
+
+    def test_403_out_of_stock_waits_for_regen_and_is_not_an_error(self):
+        self.mock.on(
+            OPEN_PATH,
+            Reply(403, {"error": "Plus de paquets disponibles", "packs_remaining": 0, "next_regen_at": iso(300)}),
+            Reply(403, {"error": "Plus de paquets disponibles", "packs_remaining": 0}),
+            Reply(200, pack(remaining=3)),
+        )
+        bot = self.bot()
+        wait, outcome = bot.step()
+        self.assertEqual(outcome, "out_of_stock")
+        self.assertTrue(305 <= wait <= 330, wait)
+        self.assertEqual(bot.errors, 0)
+        self.assertEqual(bot.forbidden, 0)
+        fallback, _ = bot.step()
+        self.assertTrue(MIN_REGEN_WAIT <= fallback <= MAX_REGEN_WAIT, fallback)
+        ok_wait, outcome = bot.step()
+        self.assertEqual(outcome, "opened")
+        self.assertTrue(20 <= ok_wait <= 40, ok_wait)
 
     def test_429_normal_respects_retry_after(self):
         self.mock.on(OPEN_PATH, Reply(429, {"rate_limited": True, "retry_after": iso(300), "packs_remaining": 0}))

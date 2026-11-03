@@ -19,6 +19,7 @@ VERIFICATION_MARKERS = (b"human_verification_required", b"anti-bot")
 class Status(Enum):
     OPENED = "opened"
     VERIFICATION_REQUIRED = "human_verification_required"
+    OUT_OF_STOCK = "out_of_stock"
     RATE_LIMITED = "rate_limited"
     UNAUTHORIZED = "unauthorized"
     FORBIDDEN = "forbidden"
@@ -79,6 +80,16 @@ def classify_open(response: Response, ref_now: dt.datetime) -> OpenResult:
         response.status == 200 and data.get("cards")
     ):
         return OpenResult(Status.VERIFICATION_REQUIRED, response)
+    if response.status == 403 and data.get("packs_remaining") is not None:
+        remaining = data.get("packs_remaining")
+        regen = data.get("next_regen_at")
+        wait = seconds_until(regen, ref_now) if isinstance(regen, str) else None
+        return OpenResult(
+            Status.OUT_OF_STOCK,
+            response,
+            packs_remaining=remaining if isinstance(remaining, int) else None,
+            wait=wait,
+        )
     if response.status == 429 or data.get("rate_limited"):
         remaining = data.get("packs_remaining")
         return OpenResult(
