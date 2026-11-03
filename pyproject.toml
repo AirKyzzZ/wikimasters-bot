@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wmbot"
+description = "Opens your WikiMasters packs as they regenerate and writes a daily report. One account, stdlib only."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Maxime Mansiet" }]
+dependencies = []
+dynamic = ["version"]
+
+[project.scripts]
+wmbot = "wmbot.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "wmbot.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+src = ["src", "tests"]
