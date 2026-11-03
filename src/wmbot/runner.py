@@ -12,7 +12,7 @@ from typing import Callable
 
 from wmbot.client import OpenResult, Status, open_pack, seconds_until, utcnow
 from wmbot.config import Config
-from wmbot.net import NetworkError
+from wmbot.net import NetworkError, redact
 from wmbot.pulls import Pull, append_pull
 from wmbot.report import notify_discord, write_daily_report
 from wmbot.session import Authenticator, FatalAuthError, TransientAuthError
@@ -125,11 +125,21 @@ class Bot:
             return self.rng.uniform(5, 15), "unauthorized"
         if result.status is Status.FORBIDDEN:
             self.forbidden += 1
-            log.warning("forbidden (%d/%d), not touching the session", self.forbidden, MAX_FORBIDDEN)
+            log.warning(
+                "forbidden (%d/%d), body: %s",
+                self.forbidden,
+                MAX_FORBIDDEN,
+                redact(result.response.body[:400].decode("utf-8", "replace")),
+            )
             if self.forbidden >= MAX_FORBIDDEN:
                 raise ForbiddenError("site keeps answering 403, the account or IP may be blocked")
             return FORBIDDEN_WAIT * self.forbidden * self.rng.uniform(1.0, 1.25), "forbidden"
-        log.warning("%s (http %d)", result.status.value, result.response.status)
+        log.warning(
+            "%s (http %d), body: %s",
+            result.status.value,
+            result.response.status,
+            redact(result.response.body[:400].decode("utf-8", "replace")),
+        )
         return self.backoff(), result.status.value
 
     def step(self) -> tuple[float, str]:

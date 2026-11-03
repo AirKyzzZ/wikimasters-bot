@@ -219,6 +219,8 @@ class BotTests(ServerTestCase):
             Reply(401, {"detail": {"reason": "human_verification_required"}}),
             Reply(200, {"error": "human_verification_required"}),
             Reply(403, b"<html>human_verification_required</html>"),
+            Reply(403, {"error": "Vérification anti-bot requise pour continuer à ouvrir des paquets."}),
+            Reply(200, {"error": "Vérification anti-bot requise"}),
         ]
         for reply in replies:
             with self.subTest(status=reply.status):
