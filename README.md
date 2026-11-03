@@ -18,7 +18,7 @@
 > [!WARNING]
 > **Use at your own risk.** The [site's terms](https://www.wiki-masters.com/terms) (section 6) list "utilisation d'automatisation" as grounds for warning, suspending or permanently deleting an account, and for cancelling rewards, with no notice and no refund. Running this bot breaks those terms. The site also runs anti-bot checks, and the author's own run hit one after a few packs. If you care about your account, don't run this.
 
-WikiMasters is a French card game where the cards are Wikipedia pages. wmbot is an unofficial personal project, not affiliated with the site. It handles one account, and it respects rate limits. It stops when the site asks for a human: there is no captcha or verification bypass here and there won't be one.
+WikiMasters is a French card game where the cards are Wikipedia pages. wmbot is an unofficial personal project, not affiliated with the site. It handles one account, and it respects rate limits. When the site asks for a human, it pauses until you have passed the check yourself: there is no captcha or verification bypass here and there won't be one.
 
 **Project status:** the code is tested against a local mock server only. This version has not run against the live site. Response formats come from observing the earlier script, so they can change without warning.
 
@@ -35,7 +35,8 @@ flowchart TD
     D -- 429 --> G[Sleep until retry_after]
     D -- 401 --> H[Refresh, stop after 3 failures]
     D -- 5xx or network --> I[Exponential backoff, up to 1 h]
-    D -- human_verification_required --> J[Write halt marker, notify, exit 5]
+    D -- human_verification_required --> J[Pause and notify, no more requests]
+    J -- you pass the check, then wmbot resume --> A
     D -- other 403 --> K[Wait 30 min and more, exit 4 on the third]
     F --> A
     G --> A
@@ -108,7 +109,7 @@ In another terminal, `.venv/bin/wmbot status` shows what it's doing.
 | `wmbot login [--force]` | Stores a new refresh token |
 | `wmbot status [--json]` | Shows state, offline, with no network call and no token output |
 | `wmbot report [--date YYYY-MM-DD] [--stdout] [--discord]` | Writes `reports/YYYY-MM-DD.md` in the data directory |
-| `wmbot resume` | Clears a human verification halt |
+| `wmbot resume [--yes]` | Continues after you passed the human verification yourself |
 
 While running, the bot writes yesterday's report once a day. New versus duplicate is computed from your local `pulls.jsonl`, so cards you owned before installing wmbot count as new the first time.
 
@@ -123,6 +124,7 @@ Everything is optional and comes from the environment or a `.env` file, see [`.e
 | `WM_DISCORD_WEBHOOK` | none | Daily report and stop alerts |
 | `WM_ANON_KEY` | found on the site | Public Supabase key |
 | `WM_AUTO_REPORT` | `1` | Daily report while running |
+| `WM_ON_VERIFICATION` | `pause` | `pause` keeps the process idle, `exit` stops it with code 5 |
 | `TZ` | system | Where report days start and end |
 
 ## Running as a service
@@ -160,11 +162,17 @@ systemd doesn't restart the bot on codes 2 to 5, because restarting wouldn't hel
 | 2 | The session is dead | Get a new token, `wmbot login --force` |
 | 3 | Another process holds the lock | Stop the other one |
 | 4 | The site keeps answering 403 | Check your account in a browser |
-| 5 | The site asks for human verification | See below |
+| 5 | Human verification with `WM_ON_VERIFICATION=exit`, or the pause marker could not be written | See below |
 
 ## Troubleshooting
 
-**`the site asks for human verification` (exit 5).** The site's anti-bot check fired. wmbot makes no further request, touches nothing in your session, writes `halted.json` and sends a Discord alert if configured. Starting it again does nothing until you run `wmbot resume`, even after a reboot. Log in on the site yourself, complete the check, and think about whether to keep going: this is a clear signal that the site has noticed the automation.
+**`the site asks for human verification`.** The site's anti-bot check fired, and the bot switches to human-in-the-loop mode:
+
+1. It stops calling the site and Supabase, leaves your session alone, writes `halted.json` and sends one Discord alert if `WM_DISCORD_WEBHOOK` is set. Restarts and reboots stay paused.
+2. Log in on the site yourself in a browser and pass the check. Use a private window and close it without logging out, as in setup step 2.
+3. Run `wmbot resume` and confirm. The running bot continues within seconds (in Docker: `docker exec -it wmbot wmbot resume`).
+
+If the check is still pending, the next request pauses it again, so one resume costs one request. Think about whether to keep going at all: this is a clear signal that the site has noticed the automation.
 
 **`refresh rejected (400 refresh_token_already_used)`.** The token was used somewhere else, usually a browser left open or a second bot. Supabase can revoke the whole session when an old token is reused. Redo step 2 and run `wmbot login --force`.
 
@@ -212,7 +220,7 @@ Tests run a real local HTTP server and never reach the site. The code is a small
 
 **À tes risques et périls :** les [conditions du site](https://www.wiki-masters.com/terms) (section 6) citent l'« utilisation d'automatisation » comme motif de suspension ou de suppression définitive du compte, sans préavis. Le site a aussi des contrôles anti-bot. Si tu tiens à ton compte, ne l'utilise pas.
 
-Le bot gère un seul compte et respecte les limites du site. Si le site demande une vérification humaine, il s'arrête, te prévient et ne repart qu'après `wmbot resume`. Il ne contourne aucun captcha ni aucune vérification.
+Le bot gère un seul compte et respecte les limites du site. Si le site demande une vérification humaine, il se met en pause et te prévient. Passe le contrôle toi-même dans ton navigateur, puis lance `wmbot resume`. Il ne contourne aucun captcha ni aucune vérification.
 
 Installation : suis le « 5-minute setup » ci-dessus. Récupère le jeton dans une fenêtre privée, puis ferme-la **sans te déconnecter**.
 

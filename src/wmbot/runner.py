@@ -27,6 +27,7 @@ BACKOFF_CAP = 3600.0
 MAX_AUTH_FAILURES = 3
 MAX_FORBIDDEN = 3
 FORBIDDEN_WAIT = 1800.0
+RESUME_POLL_SECONDS = 5.0
 
 
 class ForbiddenError(Exception):
@@ -42,6 +43,16 @@ def regen_wait(last_regen_at: str | None, now: dt.datetime) -> float:
     if elapsed is None:
         return REGEN_SECONDS
     return min(max(elapsed + REGEN_SECONDS, MIN_REGEN_WAIT), MAX_REGEN_WAIT)
+
+
+def read_halt(path: Path) -> dict[str, object] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return {"reason": "unreadable halt marker"}
+    return data if isinstance(data, dict) else {"reason": "unreadable halt marker"}
 
 
 def write_json_atomic(path: Path, data: dict[str, object]) -> None:
@@ -97,7 +108,7 @@ class Bot:
         if result.status is Status.VERIFICATION_REQUIRED:
             raise HumanVerificationRequired(
                 "the site asks for human verification. Complete it yourself in a browser, "
-                "then run `wmbot resume` and start the bot again"
+                "then run `wmbot resume`"
             )
         if result.status is Status.OPENED:
             self.errors = self.auth_failures = self.forbidden = 0
@@ -153,12 +164,13 @@ class Bot:
         except Exception as err:
             log.error("daily report failed: %s: %s", type(err).__name__, err)
 
-    def write_state(self, wait: float, outcome: str) -> None:
+    def write_state(self, wait: float | None, outcome: str) -> None:
         now = self.clock()
+        next_attempt = None if wait is None else (now + dt.timedelta(seconds=wait)).isoformat()
         state: dict[str, object] = {
             "updated_at": now.isoformat(),
             "outcome": outcome,
-            "next_attempt_at": (now + dt.timedelta(seconds=wait)).isoformat(),
+            "next_attempt_at": next_attempt,
             "last_open_at": self.last_open_at,
             "packs_remaining": self.packs_remaining,
             "consecutive_errors": self.errors,
@@ -168,24 +180,48 @@ class Bot:
         except OSError as err:
             log.warning("cannot write state: %s", type(err).__name__)
 
-    def halt(self, reason: str) -> None:
+    def halt(self, reason: str) -> bool:
         try:
             write_json_atomic(self.config.halt_file, {"reason": reason, "at": self.clock().isoformat()})
+            return True
         except OSError as err:
             log.error("cannot write halt marker: %s", type(err).__name__)
+            return False
 
-    def alert(self, message: str) -> None:
+    def notify(self, message: str) -> None:
         log.error("%s", message)
         if not self.config.discord_webhook:
             return
         try:
-            notify_discord(self.config, f"wmbot stopped: {message}")
+            notify_discord(self.config, f"wmbot: {message}")
         except NetworkError as err:
             log.warning("discord alert failed: %s", err)
 
+    def alert(self, message: str) -> None:
+        self.notify(f"stopped, {message}")
+
+    def wait_for_resume(self) -> None:
+        log.info("paused, no request will be sent until `wmbot resume`")
+        self.write_state(None, "paused_verification")
+        while not self.stop.is_set() and read_halt(self.config.halt_file) is not None:
+            self.maybe_report()
+            self.stop.wait(RESUME_POLL_SECONDS)
+        if not self.stop.is_set():
+            log.info("resumed")
+
     def run(self) -> None:
         while not self.stop.is_set():
+            if read_halt(self.config.halt_file) is not None:
+                self.wait_for_resume()
+                continue
             self.maybe_report()
-            wait, outcome = self.step()
+            try:
+                wait, outcome = self.step()
+            except HumanVerificationRequired as err:
+                saved = self.halt(str(err))
+                self.notify(str(err))
+                if not saved or self.config.on_verification == "exit":
+                    raise
+                continue
             self.write_state(wait, outcome)
             self.stop.wait(wait)

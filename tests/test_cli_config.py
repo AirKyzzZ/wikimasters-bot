@@ -132,30 +132,47 @@ class CliTests(ServerTestCase):
         self.assertEqual(code, 1)
         self.assertIn("wmbot login", err)
 
-    def test_verification_halts_notifies_and_survives_restart_until_resume(self):
+    def test_exit_mode_halts_notifies_and_stays_stopped_until_resume(self):
         SessionStore(self.config.session_file).save(session())
         self.mock.on(OPEN_PATH, Reply(403, {"error": "human_verification_required"}))
         self.mock.on("/hook", Reply(204, b""))
-        with mock.patch.dict(os.environ, {"WM_DISCORD_WEBHOOK": f"{self.mock.url}/hook"}):
+        env = {"WM_DISCORD_WEBHOOK": f"{self.mock.url}/hook", "WM_ON_VERIFICATION": "exit"}
+        with mock.patch.dict(os.environ, env):
             self.assertEqual(self.run_cli("run")[0], 5)
-        self.assertEqual(len(self.mock.hits(OPEN_PATH)), 1)
-        self.assertIn("human verification", self.mock.hits("/hook")[0]["body"].decode())
-        self.assertIn("HALTED", self.run_cli("status")[1])
+            self.assertEqual(len(self.mock.hits(OPEN_PATH)), 1)
+            self.assertIn("human verification", self.mock.hits("/hook")[0]["body"].decode())
+            self.assertIn("PAUSED", self.run_cli("status")[1])
+            code, _, err = self.run_cli("run")
+            self.assertEqual(code, 5)
+            self.assertIn("wmbot resume", err)
+            self.assertEqual(len(self.mock.hits(OPEN_PATH)), 1)
+        self.assertEqual(self.run_cli("resume", "--yes")[0], 0)
+        self.assertNotIn("PAUSED", self.run_cli("status")[1])
+        self.assertIn("not paused", self.run_cli("resume")[1])
 
-        code, _, err = self.run_cli("run")
-        self.assertEqual(code, 5)
-        self.assertIn("wmbot resume", err)
-        self.assertEqual(len(self.mock.hits(OPEN_PATH)), 1)
+    def pause_marker(self):
+        self.config.data_dir.mkdir(exist_ok=True)
+        self.config.halt_file.write_text('{"reason": "check"}')
 
-        self.assertEqual(self.run_cli("resume")[0], 0)
-        self.assertNotIn("HALTED", self.run_cli("status")[1])
-        self.assertIn("not halted", self.run_cli("resume")[1])
-
-    def test_verification_halt_without_webhook_still_exits_5(self):
-        SessionStore(self.config.session_file).save(session())
-        self.mock.on(OPEN_PATH, Reply(403, {"error": "human_verification_required"}))
-        self.assertEqual(self.run_cli("run")[0], 5)
+    def test_resume_without_tty_needs_yes(self):
+        self.pause_marker()
+        with mock.patch("sys.stdin", io.StringIO("")):
+            self.assertEqual(self.run_cli("resume")[0], 1)
         self.assertTrue(self.config.halt_file.exists())
+
+    def test_resume_prompt_only_clears_on_yes(self):
+        self.pause_marker()
+        with mock.patch("sys.stdin.isatty", return_value=True, create=True), mock.patch("builtins.input") as answer:
+            answer.return_value = "n"
+            self.assertIn("still paused", self.run_cli("resume")[1])
+            self.assertTrue(self.config.halt_file.exists())
+            answer.return_value = "y"
+            self.assertEqual(self.run_cli("resume")[0], 0)
+        self.assertFalse(self.config.halt_file.exists())
+
+    def test_invalid_verification_mode_is_a_config_error(self):
+        with mock.patch.dict(os.environ, {"WM_ON_VERIFICATION": "solve"}):
+            self.assertEqual(self.run_cli("status")[0], 1)
 
     def test_status_never_prints_tokens(self):
         SessionStore(self.config.session_file).save(session())
