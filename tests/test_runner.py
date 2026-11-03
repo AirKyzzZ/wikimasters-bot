@@ -21,7 +21,7 @@ from tests.support import (
 )
 from wmbot.client import MAX_RATE_WAIT, MIN_RATE_WAIT, seconds_until
 from wmbot.pulls import Card, Pull, append_pull, read_pulls
-from wmbot.runner import Bot, ForbiddenError, HumanVerificationRequired, read_halt, regen_wait
+from wmbot.runner import Bot, ForbiddenError, regen_wait
 from wmbot.session import Authenticator, FatalAuthError, SessionStore
 
 
@@ -183,19 +183,37 @@ class BotTests(ServerTestCase):
             bot.step()
         self.assertEqual(self.mock.hits(REFRESH_PATH), [])
 
-    def test_human_verification_stops_at_once_without_touching_session(self):
+    def test_verification_backs_off_and_never_touches_session(self):
         self.mock.on(OPEN_PATH, Reply(403, {"error": "human_verification_required"}))
-        self.mock.on(REFRESH_PATH, Reply(200, fresh_tokens(1)))
         bot = self.bot()
         before = self.config.session_file.read_bytes()
-        with self.assertRaisesRegex(HumanVerificationRequired, "wmbot resume"):
-            bot.step()
-        self.assertEqual(len(self.mock.hits(OPEN_PATH)), 1)
+        wait, outcome = bot.step()
+        self.assertEqual(outcome, "verification_required")
+        self.assertTrue(1800 <= wait <= 2250, wait)
         self.assertEqual(self.mock.hits(REFRESH_PATH), [])
+        self.assertEqual(bot.verification_hits, 1)
         self.assertEqual(self.config.session_file.read_bytes(), before)
         self.assertEqual(list(read_pulls(self.config.pulls_file)), [])
+        second = bot.step()[0]
+        self.assertGreater(second, wait)
 
-    def test_human_verification_detected_on_any_status_and_shape(self):
+    def test_verification_delay_resets_after_a_successful_open(self):
+        self.mock.on(
+            OPEN_PATH,
+            Reply(403, {"error": "human_verification_required"}),
+            Reply(403, {"error": "human_verification_required"}),
+            Reply(200, pack()),
+        )
+        bot = self.bot()
+        bot.step()
+        first_try_then = bot.step()[0]
+        wait, outcome = bot.step()
+        self.assertEqual(outcome, "opened")
+        self.assertTrue(20 <= wait <= 40, wait)
+        self.assertEqual(bot.verification_hits, 0)
+        self.assertEqual(bot.errors, 0)
+
+    def test_verification_detected_on_any_status_and_shape(self):
         replies = [
             Reply(429, {"code": "human_verification_required", "retry_after": iso(5)}),
             Reply(401, {"detail": {"reason": "human_verification_required"}}),
@@ -205,8 +223,7 @@ class BotTests(ServerTestCase):
         for reply in replies:
             with self.subTest(status=reply.status):
                 self.mock.on(OPEN_PATH, reply)
-                with self.assertRaises(HumanVerificationRequired):
-                    self.bot().step()
+                self.assertEqual(self.bot().step()[1], "verification_required")
 
     def test_card_mentioning_the_marker_is_still_a_pack(self):
         self.mock.on(OPEN_PATH, Reply(200, pack(cards=[card("human_verification_required")])))
@@ -335,70 +352,58 @@ class BotTests(ServerTestCase):
             time.sleep(0.01)
         self.fail("condition not met")
 
-    def test_pause_makes_no_request_until_resume_and_notifies_once(self):
+    def test_keep_running_through_verification_and_notifies_once(self):
         self.mock.on(
             OPEN_PATH,
+            Reply(403, {"error": "human_verification_required"}),
             Reply(403, {"error": "human_verification_required"}),
             Reply(200, pack(remaining=0)),
         )
         self.mock.on("/hook", Reply(204, b""))
         bot = self.bot()
         bot.config = replace(self.config, discord_webhook=f"{self.mock.url}/hook")
-        with mock.patch("wmbot.runner.RESUME_POLL_SECONDS", 0.01):
+
+        def state_outcome():
+            try:
+                return json.loads(self.config.state_file.read_text())["outcome"]
+            except (OSError, ValueError, KeyError):
+                return None
+
+        with mock.patch("wmbot.runner.VERIFY_BASE", 0.01), mock.patch("wmbot.runner.VERIFY_CAP", 0.01):
             worker = self.start(bot)
-            self.wait_until(self.config.halt_file.exists)
-            self.wait_until(lambda: self.config.state_file.exists())
-            time.sleep(0.1)
-            self.assertTrue(worker.is_alive())
-            self.assertEqual(len(self.mock.hits(OPEN_PATH)), 1)
+            self.wait_until(lambda: state_outcome() == "opened")
+            self.assertEqual(len(self.mock.hits(OPEN_PATH)), 3)
             self.assertEqual(self.mock.hits(REFRESH_PATH), [])
             self.assertEqual(len(self.mock.hits("/hook")), 1)
-            self.assertEqual(json.loads(self.config.state_file.read_text())["outcome"], "paused_verification")
-            self.config.halt_file.unlink()
-            self.wait_until(lambda: len(self.mock.hits(OPEN_PATH)) == 2)
-            self.wait_until(lambda: json.loads(self.config.state_file.read_text())["outcome"] == "opened")
+            self.assertIn("human verification", self.mock.hits("/hook")[0]["body"].decode())
             bot.stop.set()
             worker.join(5)
         self.assertFalse(worker.is_alive())
 
-    def test_restart_while_paused_sends_nothing(self):
-        self.config.data_dir.mkdir()
-        self.config.halt_file.write_text("{}")
-        self.mock.on(OPEN_PATH, Reply(200, pack()))
+    def test_verification_recovered_on_its_own_without_user_action(self):
+        self.mock.on(
+            OPEN_PATH,
+            Reply(403, {"error": "human_verification_required"}),
+            Reply(403, {"error": "human_verification_required"}),
+            Reply(403, {"error": "human_verification_required"}),
+            Reply(200, pack()),
+        )
         bot = self.bot()
-        with mock.patch("wmbot.runner.RESUME_POLL_SECONDS", 0.01):
+
+        def state_outcome():
+            try:
+                return json.loads(self.config.state_file.read_text())["outcome"]
+            except (OSError, ValueError, KeyError):
+                return None
+
+        with mock.patch("wmbot.runner.VERIFY_BASE", 0.01), mock.patch("wmbot.runner.VERIFY_CAP", 0.01):
             worker = self.start(bot)
-            time.sleep(0.1)
-            self.assertEqual(self.mock.calls, [])
+            self.wait_until(lambda: state_outcome() == "opened")
+            self.assertEqual(len(self.mock.hits(OPEN_PATH)), 4)
+            self.assertEqual(bot.verification_hits, 0)
             bot.stop.set()
             worker.join(5)
         self.assertFalse(worker.is_alive())
-
-    def test_corrupt_marker_stays_paused(self):
-        self.config.data_dir.mkdir()
-        self.config.halt_file.write_text("{garbage")
-        self.assertIsNotNone(read_halt(self.config.halt_file))
-
-    def test_verification_again_after_resume_pauses_again(self):
-        self.mock.on(OPEN_PATH, Reply(403, {"error": "human_verification_required"}))
-        bot = self.bot()
-        with mock.patch("wmbot.runner.RESUME_POLL_SECONDS", 0.01):
-            worker = self.start(bot)
-            self.wait_until(self.config.halt_file.exists)
-            self.config.halt_file.unlink()
-            self.wait_until(lambda: len(self.mock.hits(OPEN_PATH)) == 2 and self.config.halt_file.exists())
-            time.sleep(0.05)
-            self.assertEqual(len(self.mock.hits(OPEN_PATH)), 2)
-            bot.stop.set()
-            worker.join(5)
-
-    def test_unwritable_marker_fails_closed(self):
-        self.mock.on(OPEN_PATH, Reply(403, {"error": "human_verification_required"}))
-        bot = self.bot()
-        with mock.patch.object(bot, "halt", return_value=False), self.assertLogs("wmbot", "ERROR"):
-            with self.assertRaises(HumanVerificationRequired):
-                bot.run()
-        self.assertEqual(len(self.mock.hits(OPEN_PATH)), 1)
 
     def test_owned_copies_kept_on_card(self):
         body = pack(cards=[card(card_id=11)], owned_copies={"11": 2})

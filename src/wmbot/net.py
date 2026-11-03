@@ -86,4 +86,4 @@ def request(
             return _wrap(err, limit)
     except (OSError, http.client.HTTPException, ValueError) as err:
         reason = getattr(err, "reason", err)
-        raise NetworkError(redact(str(reason))) from None
+        raise NetworkError(redact(str(reason))) from (reason if isinstance(reason, Exception) else None)

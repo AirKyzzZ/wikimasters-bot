@@ -146,13 +146,13 @@ class RefreshTests(ServerTestCase):
         self.assertEqual(store.load().expires_at, 5)
         self.assertEqual(len(self.mock.hits(REFRESH_PATH)), 1)
 
-    def test_server_error_retries_once_quickly_then_transient(self):
+    def test_server_5xx_is_transient_without_replaying_token(self):
         self.mock.on(REFRESH_PATH, Reply(503, {}))
-        auth, _ = self.auth()
+        auth, store = self.auth()
         with self.assertRaises(TransientAuthError):
             auth.refresh()
-        self.assertEqual(len(self.mock.hits(REFRESH_PATH)), 2)
-        self.assertEqual(self.sleeps, [2.0])
+        self.assertEqual(len(self.mock.hits(REFRESH_PATH)), 1)
+        self.assertEqual(self.sleeps, [])
 
     def test_lost_response_retries_same_token_inside_reuse_window(self):
         self.mock.on(REFRESH_PATH, Reply(0), Reply(200, fresh_tokens(1)))
@@ -179,16 +179,13 @@ class RefreshTests(ServerTestCase):
         auth.ensure_fresh()
         self.assertEqual(len(self.mock.hits(REFRESH_PATH)), 1)
 
-    def test_failed_persist_keeps_memory_and_retries_on_next_call(self):
+    def test_failed_persist_is_fatal_and_never_uses_unsaved_token(self):
         self.mock.on(REFRESH_PATH, Reply(200, fresh_tokens(1)))
         auth, store = self.auth()
         with mock.patch.object(store, "save", side_effect=OSError("disk full")):
-            with self.assertLogs("wmbot", logging.ERROR):
+            with self.assertRaisesRegex(FatalAuthError, "persist"):
                 auth.refresh()
-        self.assertEqual(auth.session.refresh_token, "fake-refresh-1")
         self.assertFalse(self.config.session_file.exists())
-        auth.ensure_fresh()
-        self.assertEqual(store.load().refresh_token, "fake-refresh-1")
         self.assertEqual(len(self.mock.hits(REFRESH_PATH)), 1)
 
 

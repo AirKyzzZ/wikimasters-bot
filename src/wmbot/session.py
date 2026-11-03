@@ -22,6 +22,8 @@ log = logging.getLogger("wmbot")
 COOKIE_CHUNK = 3180
 REFRESH_MARGIN = 600
 REUSE_RETRY_DELAY = 2.0
+FLUSH_RETRIES = 4
+FLUSH_RETRY_DELAY = 1.0
 TERMINAL_AUTH_STATUSES = {400, 401, 422}
 
 
@@ -210,6 +212,27 @@ def discover_anon_key(config: Config) -> str:
     raise NetworkError("could not find the public anon key on the site, set WM_ANON_KEY")
 
 
+def cached_anon_key(config: Config) -> str | None:
+    path = config.data_dir / "anon_key"
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def cache_anon_key(config: Config, key: str) -> None:
+    try:
+        path = config.data_dir / "anon_key"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".anon_key.")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(key)
+        os.replace(tmp, path)
+    except OSError as err:
+        log.warning("cannot cache anon key: %s", type(err).__name__)
+
+
 def auth_error_code(response: Response) -> str:
     data = response.json()
     if isinstance(data, dict):
@@ -237,7 +260,10 @@ class Authenticator:
 
     def anon_key(self) -> str:
         if not self._anon_key:
-            self._anon_key = discover_anon_key(self.config)
+            self._anon_key = self.config.anon_key or cached_anon_key(self.config) or ""
+            if not self._anon_key:
+                self._anon_key = discover_anon_key(self.config)
+                cache_anon_key(self.config, self._anon_key)
         return self._anon_key
 
     def _post_refresh(self) -> Response:
@@ -255,16 +281,15 @@ class Authenticator:
 
     def refresh(self) -> Session:
         try:
+            response = self._post_refresh()
+        except NetworkError as err:
+            if not isinstance(err.__cause__, (ConnectionRefusedError, ConnectionResetError, ConnectionAbortedError)):
+                raise TransientAuthError(f"refresh network error: {err}") from None
+            self._sleep(REUSE_RETRY_DELAY)
             try:
                 response = self._post_refresh()
-            except NetworkError:
-                self._sleep(REUSE_RETRY_DELAY)
-                response = self._post_refresh()
-            if response.status >= 500:
-                self._sleep(REUSE_RETRY_DELAY)
-                response = self._post_refresh()
-        except NetworkError as err:
-            raise TransientAuthError(f"refresh network error: {err}") from None
+            except NetworkError as err:
+                raise TransientAuthError(f"refresh network error: {err}") from None
         if response.status in TERMINAL_AUTH_STATUSES:
             raise FatalAuthError(
                 f"refresh rejected ({response.status} {auth_error_code(response)}), a new refresh token is needed"
@@ -289,11 +314,16 @@ class Authenticator:
     def flush(self) -> None:
         if not self._unsaved:
             return
-        try:
-            self.store.save(self.session)
-            self._unsaved = False
-        except OSError as err:
-            log.error("cannot persist rotated session, will retry: %s", type(err).__name__)
+        for attempt in range(FLUSH_RETRIES):
+            try:
+                self.store.save(self.session)
+                self._unsaved = False
+                return
+            except OSError as err:
+                if attempt < FLUSH_RETRIES - 1:
+                    self._sleep(FLUSH_RETRY_DELAY)
+                last = err
+        raise FatalAuthError(f"cannot persist the rotated session ({type(last).__name__}), stopping to protect it")
 
     def ensure_fresh(self, margin: float = REFRESH_MARGIN) -> Session:
         self.flush()

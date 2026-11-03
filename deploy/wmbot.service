@@ -11,7 +11,7 @@ EnvironmentFile=-%h/.config/wmbot/env
 ExecStart=%h/.local/bin/wmbot run
 Restart=on-failure
 RestartSec=60
-RestartPreventExitStatus=2 3 4 5
+RestartPreventExitStatus=2 3 4
 UMask=0077
 NoNewPrivileges=true
 

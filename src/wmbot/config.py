@@ -24,7 +24,6 @@ class Config:
     discord_webhook: str = ""
     user_agent: str = "Mozilla/5.0 (X11; Linux x86_64) wmbot (personal, one account)"
     auto_report: bool = True
-    on_verification: str = "pause"
 
     @property
     def pulls_file(self) -> Path:
@@ -37,10 +36,6 @@ class Config:
     @property
     def state_file(self) -> Path:
         return self.data_dir / "state.json"
-
-    @property
-    def halt_file(self) -> Path:
-        return self.data_dir / "halted.json"
 
     @property
     def lock_file(self) -> Path:
@@ -80,12 +75,6 @@ def _require_discord(url: str) -> str:
     raise ConfigError("WM_DISCORD_WEBHOOK must be a https://discord.com/api/webhooks/... URL")
 
 
-def _require_verification_mode(value: str) -> str:
-    if value in {"pause", "exit"}:
-        return value
-    raise ConfigError("WM_ON_VERIFICATION must be pause or exit")
-
-
 def load_config(env: dict[str, str] | None = None, env_file: Path | None = None) -> Config:
     environ = dict(os.environ if env is None else env)
     path = env_file or Path(environ.get("WM_ENV_FILE", ".env"))
@@ -103,5 +92,4 @@ def load_config(env: dict[str, str] | None = None, env_file: Path | None = None)
         discord_webhook=_require_discord(get("WM_DISCORD_WEBHOOK", "")),
         user_agent=get("WM_USER_AGENT", Config.user_agent),
         auto_report=get("WM_AUTO_REPORT", "1").lower() not in {"0", "false", "no", "off"},
-        on_verification=_require_verification_mode(get("WM_ON_VERIFICATION", "pause")),
     )

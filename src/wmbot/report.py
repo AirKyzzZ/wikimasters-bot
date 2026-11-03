@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
+import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,9 +130,14 @@ def write_daily_report(
     if skip_existing and not summary.packs:
         return None
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".md.tmp")
-    tmp.write_text(render_markdown(summary), encoding="utf-8")
-    tmp.replace(target)
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(render_markdown(summary))
+        os.replace(tmp, target)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
     if config.discord_webhook:
         try:
             post_discord(config, summary)
@@ -160,7 +167,7 @@ def post_discord(config: Config, summary: DailySummary) -> None:
     cards = []
     for card in summary.best:
         link = safe_url(card.link)
-        title = card.title.replace("[", "(").replace("]", ")")
+        title = escape(card.title)
         cards.append(f"**{card.rarity}** [{title}]({link})" if link else f"**{card.rarity}** {title}")
     embed: dict[str, object] = {
         "title": f"WikiMasters, {summary.day.isoformat()}",

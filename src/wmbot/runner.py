@@ -27,14 +27,11 @@ BACKOFF_CAP = 3600.0
 MAX_AUTH_FAILURES = 3
 MAX_FORBIDDEN = 3
 FORBIDDEN_WAIT = 1800.0
-RESUME_POLL_SECONDS = 5.0
+VERIFY_BASE = 1800.0
+VERIFY_CAP = 28800.0
 
 
 class ForbiddenError(Exception):
-    pass
-
-
-class HumanVerificationRequired(Exception):
     pass
 
 
@@ -43,16 +40,6 @@ def regen_wait(last_regen_at: str | None, now: dt.datetime) -> float:
     if elapsed is None:
         return REGEN_SECONDS
     return min(max(elapsed + REGEN_SECONDS, MIN_REGEN_WAIT), MAX_REGEN_WAIT)
-
-
-def read_halt(path: Path) -> dict[str, object] | None:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, ValueError):
-        return {"reason": "unreadable halt marker"}
-    return data if isinstance(data, dict) else {"reason": "unreadable halt marker"}
 
 
 def write_json_atomic(path: Path, data: dict[str, object]) -> None:
@@ -84,6 +71,8 @@ class Bot:
         self.errors = 0
         self.auth_failures = 0
         self.forbidden = 0
+        self.verification_hits = 0
+        self.verification_notified = False
         self.last_open_at: str | None = None
         self.packs_remaining: int | None = None
         self._reported: dt.date | None = None
@@ -91,6 +80,11 @@ class Bot:
     def backoff(self) -> float:
         self.errors += 1
         delay = min(BACKOFF_BASE * 2 ** (self.errors - 1), BACKOFF_CAP)
+        return delay * self.rng.uniform(1.0, 1.25)
+
+    def verification_wait(self) -> float:
+        delay = min(VERIFY_BASE * 2 ** self.verification_hits, VERIFY_CAP)
+        self.verification_hits += 1
         return delay * self.rng.uniform(1.0, 1.25)
 
     def _record(self, result: OpenResult, now: dt.datetime) -> None:
@@ -106,18 +100,18 @@ class Bot:
 
     def handle(self, result: OpenResult, now: dt.datetime) -> tuple[float, str]:
         if result.status is Status.VERIFICATION_REQUIRED:
-            raise HumanVerificationRequired(
-                "the site asks for human verification. Complete it yourself in a browser, "
-                "then run `wmbot resume`"
-            )
+            log.warning("human verification required, retrying with a growing delay")
+            return self.verification_wait(), "verification_required"
         if result.status is Status.OPENED:
             self.errors = self.auth_failures = self.forbidden = 0
+            self.verification_hits = 0
             self._record(result, now)
             if result.packs_remaining and result.packs_remaining > 0:
                 return self.rng.uniform(20, 40), "opened"
             return regen_wait(result.last_regen_at, now) + self.rng.uniform(5, 30), "opened"
         if result.status is Status.RATE_LIMITED:
             self.errors = self.forbidden = 0
+            self.verification_hits = 0
             self.packs_remaining = result.packs_remaining
             wait = (result.wait or 0) + self.rng.uniform(3, 15)
             log.info("%s limit, sleeping %ds", "daily" if result.daily else "rate", wait)
@@ -180,14 +174,6 @@ class Bot:
         except OSError as err:
             log.warning("cannot write state: %s", type(err).__name__)
 
-    def halt(self, reason: str) -> bool:
-        try:
-            write_json_atomic(self.config.halt_file, {"reason": reason, "at": self.clock().isoformat()})
-            return True
-        except OSError as err:
-            log.error("cannot write halt marker: %s", type(err).__name__)
-            return False
-
     def notify(self, message: str) -> None:
         log.error("%s", message)
         if not self.config.discord_webhook:
@@ -200,28 +186,15 @@ class Bot:
     def alert(self, message: str) -> None:
         self.notify(f"stopped, {message}")
 
-    def wait_for_resume(self) -> None:
-        log.info("paused, no request will be sent until `wmbot resume`")
-        self.write_state(None, "paused_verification")
-        while not self.stop.is_set() and read_halt(self.config.halt_file) is not None:
-            self.maybe_report()
-            self.stop.wait(RESUME_POLL_SECONDS)
-        if not self.stop.is_set():
-            log.info("resumed")
-
     def run(self) -> None:
         while not self.stop.is_set():
-            if read_halt(self.config.halt_file) is not None:
-                self.wait_for_resume()
-                continue
             self.maybe_report()
-            try:
-                wait, outcome = self.step()
-            except HumanVerificationRequired as err:
-                saved = self.halt(str(err))
-                self.notify(str(err))
-                if not saved or self.config.on_verification == "exit":
-                    raise
-                continue
+            wait, outcome = self.step()
+            if outcome == "verification_required":
+                if not self.verification_notified:
+                    self.verification_notified = True
+                    self.notify("the site asks for human verification, the bot keeps trying until it clears")
+            else:
+                self.verification_notified = False
             self.write_state(wait, outcome)
             self.stop.wait(wait)

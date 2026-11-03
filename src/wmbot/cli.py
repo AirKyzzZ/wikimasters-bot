@@ -17,7 +17,7 @@ from wmbot.config import Config, ConfigError, load_config
 from wmbot.net import NetworkError, RedactingFilter
 from wmbot.pulls import read_pulls
 from wmbot.report import post_discord, render_markdown, summarize, write_daily_report
-from wmbot.runner import Bot, ForbiddenError, HumanVerificationRequired, read_halt
+from wmbot.runner import Bot, ForbiddenError
 from wmbot.session import (
     AlreadyRunning,
     Authenticator,
@@ -34,7 +34,6 @@ EXIT_ERROR = 1
 EXIT_AUTH = 2
 EXIT_ALREADY_RUNNING = 3
 EXIT_FORBIDDEN = 4
-EXIT_VERIFICATION = 5
 LOCK_ATTEMPTS = 5
 LOCK_RETRY_SECONDS = 2.0
 
@@ -62,10 +61,6 @@ def acquire_with_retry(lock: ProcessLock) -> None:
 
 
 def cmd_run(config: Config, _: argparse.Namespace) -> int:
-    halt = read_halt(config.halt_file)
-    if halt and config.on_verification == "exit":
-        log.error("halted: %s", halt.get("reason"))
-        return EXIT_VERIFICATION
     lock = ProcessLock(config.lock_file)
     acquire_with_retry(lock)
     stop = threading.Event()
@@ -83,27 +78,9 @@ def cmd_run(config: Config, _: argparse.Namespace) -> int:
     except ForbiddenError as err:
         bot.alert(str(err))
         return EXIT_FORBIDDEN
-    except HumanVerificationRequired:
-        return EXIT_VERIFICATION
     finally:
         lock.release()
     log.info("stopped")
-    return EXIT_OK
-
-
-def cmd_resume(config: Config, args: argparse.Namespace) -> int:
-    if read_halt(config.halt_file) is None:
-        print("not paused")
-        return EXIT_OK
-    if not args.yes:
-        if not sys.stdin.isatty():
-            print("run this in a terminal, or pass --yes once you have passed the check", file=sys.stderr)
-            return EXIT_ERROR
-        if input("Did you pass the check yourself in your browser? [y/N] ").strip().lower() not in {"y", "yes"}:
-            print("still paused")
-            return EXIT_OK
-    config.halt_file.unlink(missing_ok=True)
-    print("resuming: a running bot continues within seconds, otherwise start it again")
     return EXIT_OK
 
 
@@ -132,8 +109,6 @@ def _human_delta(seconds: float) -> str:
 def cmd_status(config: Config, args: argparse.Namespace) -> int:
     running = ProcessLock(config.lock_file).is_held_elsewhere()
     info: dict[str, object] = {"version": __version__, "running": running, "session_file": str(config.session_file)}
-    halt = read_halt(config.halt_file)
-    info["halted"] = halt
     try:
         session = SessionStore(config.session_file).load()
         info["access_token_expires_in_s"] = int(session.expires_in())
@@ -152,8 +127,6 @@ def cmd_status(config: Config, args: argparse.Namespace) -> int:
         print(json.dumps(info, indent=2))
         return EXIT_OK
     print(f"wmbot {__version__}: {'running' if running else 'not running'}")
-    if halt:
-        print(f"PAUSED:   {halt.get('reason')} ({halt.get('at', 'unknown time')})")
     if "session_error" in info:
         print(f"session:  {info['session_error']}")
     else:
@@ -194,9 +167,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", type=Path, help="env file to read (default: ./.env)")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="run the bot until stopped").set_defaults(func=cmd_run)
-    resume = sub.add_parser("resume", help="continue after you passed the human verification yourself")
-    resume.add_argument("--yes", action="store_true", help="skip the question, for non-interactive shells")
-    resume.set_defaults(func=cmd_resume)
     login = sub.add_parser("login", help="store your refresh token (asked with hidden input)")
     login.add_argument("--force", action="store_true", help="replace an existing session")
     login.set_defaults(func=cmd_login)
