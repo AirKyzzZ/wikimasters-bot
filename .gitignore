@@ -1,0 +1,11 @@
+.env
+.claude/
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+build/
+dist/
+/pulls.jsonl
+/reports/
+*.session.json
